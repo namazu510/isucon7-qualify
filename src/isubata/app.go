@@ -475,29 +475,51 @@ func fetchUnread(c echo.Context) error {
 
 	resp := []map[string]interface{}{}
 
-	for _, chID := range channels {
-		lastID, err := queryHaveRead(userID, chID)
-		if err != nil {
-			return err
-		}
+	// 未読のメッセージが存在するチャンネルIDと、未読メッセージ数
+	// 未読メッセージ数が0の場合、そのチャンネルはクエリーの結果に出現しないことに注意。
+	query, args, err := sqlx.In(`
+		SELECT hr.channel_id, COUNT(msg.id) as cnt
+		FROM message as msg
+		INNER JOIN (
+			SELECT channel_id, message_id FROM haveread WHERE user_id = ? AND channel_id IN (?)
+		) as hr
+		ON msg.channel_id = hr.channel_id AND hr.message_id < msg.id
+		GROUP BY hr.channel_id
+	`, userID, channels)
+	if err != nil {
+		return err
+	}
 
+	db.Rebind(query)
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	found_channels := map[int64]bool{}
+
+	for rows.Next() {
+		var chID int64
 		var cnt int64
-		if lastID > 0 {
-			err = db.Get(&cnt,
-				"SELECT COUNT(*) as cnt FROM message WHERE channel_id = ? AND ? < id",
-				chID, lastID)
-		} else {
-			err = db.Get(&cnt,
-				"SELECT COUNT(*) as cnt FROM message WHERE channel_id = ?",
-				chID)
-		}
-		if err != nil {
-			return err
-		}
+		rows.Scan(&chID, &cnt)
+
 		r := map[string]interface{}{
 			"channel_id": chID,
 			"unread":     cnt}
 		resp = append(resp, r)
+
+		found_channels[chID] = true
+	}
+
+	// 出現しなかったチャンネルは、未読メッセージ数が0として扱う。
+	for _, chID := range channels {
+		if _, ok := found_channels[chID]; !ok {
+			r := map[string]interface{}{
+				"channel_id": chID,
+				"unread":     0}
+			resp = append(resp, r)
+		}
 	}
 
 	return c.JSON(http.StatusOK, resp)
@@ -686,7 +708,7 @@ func postProfile(c echo.Context) error {
 	}
 
 	if avatarName != "" && len(avatarData) > 0 {
-		_, err := db.Exec("INSERT INTO image (name, data) VALUES (?, ?)", avatarName, avatarData)
+		_, err := db.Exec("INSERT INTO image (name) VALUES (?)", avatarName)
 		if err != nil {
 			return err
 		}
@@ -694,6 +716,10 @@ func postProfile(c echo.Context) error {
 		if err != nil {
 			return err
 		}
+		// save file
+		file, _ := os.OpenFile("/mnt/images/"+avatarName, os.O_CREATE|os.O_WRONLY, 0666)
+		file.Write(avatarData)
+		file.Close()
 	}
 
 	if name := c.FormValue("display_name"); name != "" {
@@ -704,32 +730,6 @@ func postProfile(c echo.Context) error {
 	}
 
 	return c.Redirect(http.StatusSeeOther, "/")
-}
-
-func getIcon(c echo.Context) error {
-	var name string
-	var data []byte
-	err := db.QueryRow("SELECT name, data FROM image WHERE name = ?",
-		c.Param("file_name")).Scan(&name, &data)
-	if err == sql.ErrNoRows {
-		return echo.ErrNotFound
-	}
-	if err != nil {
-		return err
-	}
-
-	mime := ""
-	switch true {
-	case strings.HasSuffix(name, ".jpg"), strings.HasSuffix(name, ".jpeg"):
-		mime = "image/jpeg"
-	case strings.HasSuffix(name, ".png"):
-		mime = "image/png"
-	case strings.HasSuffix(name, ".gif"):
-		mime = "image/gif"
-	default:
-		return echo.ErrNotFound
-	}
-	return c.Blob(http.StatusOK, mime, data)
 }
 
 func tAdd(a, b int64) int64 {
@@ -778,7 +778,6 @@ func main() {
 
 	e.GET("add_channel", getAddChannel)
 	e.POST("add_channel", postAddChannel)
-	e.GET("/icons/:file_name", getIcon)
 
 	e.Start(":5000")
 }
