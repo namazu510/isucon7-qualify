@@ -148,6 +148,26 @@ func sessSetUserID(c echo.Context, id int64) {
 	sess.Save(c.Request(), c.Response())
 }
 
+func sessReadId(c echo.Context, ch_id int64) int64 {
+	sess, _ := session.Get("session", c)
+	var readId int64
+	if x, ok := sess.Values[ch_id]; ok {
+		readId, _ = x.(int64)
+	}
+	
+	return readId
+}
+
+func sessSetReadId(c echo.Context, ch_id int64 ,id int64) {
+	sess, _ := session.Get("session", c)
+	sess.Options = &sessions.Options{
+		HttpOnly: true,
+		MaxAge:   360000,
+	}
+	sess.Values[ch_id] = id
+	sess.Save(c.Request(), c.Response())
+}
+
 func ensureLogin(c echo.Context) (*User, error) {
 	var user *User
 	var err error
@@ -404,6 +424,7 @@ func getMessage(c echo.Context) error {
 		if err != nil {
 			return err
 		}
+		sessSetReadId(c,chanID,messages[0].ID)
 	}
 
 	return c.JSON(http.StatusOK, response)
@@ -452,9 +473,12 @@ func fetchUnread(c echo.Context) error {
 	resp := []map[string]interface{}{}
 
 	for _, chID := range channels {
-		lastID, err := queryHaveRead(userID, chID)
-		if err != nil {
-			return err
+		lastID := sessReadId(c, chID)
+		if lastID == 0 {
+			lastID, err = queryHaveRead(userID, chID)
+			if err != nil {
+				return err
+			}
 		}
 
 		var cnt int64
