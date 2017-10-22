@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"time"
+	_ "github.com/go-sql-driver/mysql"
 )
 
 var (
@@ -16,7 +17,7 @@ func main() {
 	db_host := "127.0.0.1"
 	db_port := "3306"
 	db_user := "isucon"
-	db_password := "isucon"
+	db_password := ":isucon"
 	dsn := fmt.Sprintf("%s%s@tcp(%s:%s)/isubata?parseTime=true&loc=Local&charset=utf8mb4",
 		db_user, db_password, db_host, db_port)
 
