@@ -466,75 +466,18 @@ func fetchUnread(c echo.Context) error {
 		return c.NoContent(http.StatusForbidden)
 	}
 
-	time.Sleep(time.Second)
-
-	channels, err := queryChannels()
-	if err != nil {
-		return err
-	}
-
-	not_found_channels := []int64{}
-	all_unreaded_channels := []int64{}
+	queries := []string{}
+	opened_channels := []int64{}
 	resp := []map[string]interface{}{}
+
+	// チャンネル一覧
 	{
-		// 未読のメッセージが存在するチャンネルIDと、未読メッセージ数
-		// 未読メッセージ数が0の場合、そのチャンネルはクエリーの結果に出現しないことに注意。
-		query, args, err := sqlx.In(`
-			SELECT hr.channel_id, COUNT(msg.id) as cnt
-			FROM message as msg
-			INNER JOIN (
-				SELECT channel_id, message_id FROM haveread WHERE user_id = ? AND channel_id IN (?)
-			) as hr
-			ON msg.channel_id = hr.channel_id AND hr.message_id < msg.id
-			GROUP BY hr.channel_id
-		`, userID, channels)
-		if err != nil {
-			return err
-		}
-
-		db.Rebind(query)
-		rows, err := db.Query(query, args...)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-
-		found_channels := map[int64]bool{}
-		for rows.Next() {
-			var chID int64
-			var cnt int64
-			rows.Scan(&chID, &cnt)
-
-			r := map[string]interface{}{
-				"channel_id": chID,
-				"unread":     cnt}
-			resp = append(resp, r)
-
-			found_channels[chID] = true
-		}
-
-		// 出現しなかったチャンネルは、そのチャンネルは一回も読んだことがないとして扱う
-		for _, chID := range channels {
-			if _, ok := found_channels[chID]; !ok {
-				not_found_channels = append(not_found_channels, chID)
-			}
-		}
-	}
-
-	// 一回も開いたことがないチャンネルは、全てのメッセージが未読
-	{
-		query, args, err := sqlx.In(`
-			SELECT channel_id, count(id)
-			FROM message
-			WHERE channel_id In (?)
-			GROUP BY channel_id
-		`, not_found_channels)
-		if err != nil {
-			return err
-		}
-
-		db.Rebind(query)
-		rows, err := db.Query(query, args...)
+		rows, err := db.Query(`
+			SELECT channel.id, IFNULL(hr.message_id, 0)
+			FROM channel LEFT OUTER JOIN (
+				SELECT * FROM haveread WHERE haveread.user_id=?
+			) AS hr ON hr.channel_id = channel.id;
+		`, userID)
 		if err != nil {
 			return err
 		}
@@ -542,34 +485,42 @@ func fetchUnread(c echo.Context) error {
 
 		for rows.Next() {
 			var chID int64
+			var lastID int64
+			if err := rows.Scan(&chID, &lastID); err != nil {
+				log.Println(err)
+			}
+			opened_channels = append(opened_channels, chID)
+
+			if lastID > 0 {
+				queries = append(queries, fmt.Sprintf(
+					"SELECT %d, COUNT(*) as cnt FROM message WHERE channel_id = %d AND %d < id",
+					chID, chID, lastID))
+			} else {
+				queries = append(queries, fmt.Sprintf(
+					"SELECT %d, COUNT(*) as cnt FROM message WHERE channel_id = %d",
+					chID, chID))
+			}
+		}
+	}
+
+	{
+		query := strings.Join(queries, " UNION ")
+		rows, err := db.Query(query)
+		if err != nil {
+			return err
+		}
+
+		for rows.Next() {
+			var chID int64
 			var cnt int64
-			rows.Scan(&chID, &cnt)
+			if err := rows.Scan(&chID, &cnt); err != nil {
+				return err
+			}
 
 			r := map[string]interface{}{
 				"channel_id": chID,
 				"unread":     cnt}
 			resp = append(resp, r)
-
-			all_unreaded_channels = append(all_unreaded_channels, chID)
-		}
-	}
-
-	{
-		// 全てのメッセージ読み終えたスレッドは、未読件数0として扱う
-		for _, id1 := range not_found_channels {
-			all_readed := true
-			for _, id2 := range all_unreaded_channels {
-				if id1 == id2 {
-					all_readed = false
-					break;
-				}
-			}
-			if all_readed {
-				r := map[string]interface{}{
-					"channel_id": id1,
-					"unread":     0}
-				resp = append(resp, r)
-			}
 		}
 	}
 
