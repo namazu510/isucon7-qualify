@@ -23,6 +23,7 @@ import (
 	"github.com/labstack/echo"
 	"github.com/labstack/echo-contrib/session"
 	"github.com/labstack/echo/middleware"
+	"github.com/garyburd/redigo/redis"
 )
 
 const (
@@ -351,11 +352,34 @@ func postMessage(c echo.Context) error {
 }
 
 func jsonifyMessage(m Message) (map[string]interface{}, error) {
+	c, e := redis.Dial("tcp", ":6379")
+    if e != nil {
+        log.Fatal(e)
+    }
+	defer c.Close()
+
 	u := User{}
-	err := db.Get(&u, "SELECT name, display_name, avatar_icon FROM user WHERE id = ?",
-		m.UserID)
-	if err != nil {
-		return nil, err
+	
+	data, _ := redis.Values(c.Do("HGETALL", "user_" + strconv.FormatInt(m.UserID, 10)))
+	
+    // JSON to struct
+    if len(data) != 0 {
+		redis.ScanStruct(data, &u)
+		fmt.Println(u)
+    } else {
+		err := db.Get(&u, "SELECT name, display_name, avatar_icon FROM user WHERE id = ?",
+			m.UserID)
+		if err != nil {
+			return nil, err
+		}
+		c.Do("HMSET", "user_" + strconv.FormatInt(m.UserID, 10), 
+			"ID", u.ID,
+			"Name", u.Name,
+			"Salt", u.Salt,
+			"Password", u.Password,
+			"DisplayName", u.DisplayName,
+			"AvatarIcon", u.AvatarIcon,
+			"CreatedAt", u.CreatedAt)
 	}
 
 	r := make(map[string]interface{})
