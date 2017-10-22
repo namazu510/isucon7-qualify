@@ -442,38 +442,62 @@ func fetchUnread(c echo.Context) error {
 		return c.NoContent(http.StatusForbidden)
 	}
 
-	time.Sleep(time.Second)
-
-	channels, err := queryChannels()
-	if err != nil {
-		return err
-	}
-
+	queries := []string{}
+	opened_channels := []int64{}
 	resp := []map[string]interface{}{}
 
-	for _, chID := range channels {
-		lastID, err := queryHaveRead(userID, chID)
+	// チャンネル一覧
+	{
+		rows, err := db.Query(`
+			SELECT channel.id, IFNULL(hr.message_id, 0)
+			FROM channel LEFT OUTER JOIN (
+				SELECT * FROM haveread WHERE haveread.user_id=?
+			) AS hr ON hr.channel_id = channel.id;
+		`, userID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var chID int64
+			var lastID int64
+			if err := rows.Scan(&chID, &lastID); err != nil {
+				log.Println(err)
+			}
+			opened_channels = append(opened_channels, chID)
+
+			if lastID > 0 {
+				queries = append(queries, fmt.Sprintf(
+					"SELECT %d, COUNT(*) as cnt FROM message WHERE channel_id = %d AND %d < id",
+					chID, chID, lastID))
+			} else {
+				queries = append(queries, fmt.Sprintf(
+					"SELECT %d, COUNT(*) as cnt FROM message WHERE channel_id = %d",
+					chID, chID))
+			}
+		}
+	}
+
+	{
+		query := strings.Join(queries, " UNION ")
+		rows, err := db.Query(query)
 		if err != nil {
 			return err
 		}
 
-		var cnt int64
-		if lastID > 0 {
-			err = db.Get(&cnt,
-				"SELECT COUNT(*) as cnt FROM message WHERE channel_id = ? AND ? < id",
-				chID, lastID)
-		} else {
-			err = db.Get(&cnt,
-				"SELECT COUNT(*) as cnt FROM message WHERE channel_id = ?",
-				chID)
+		for rows.Next() {
+			var chID int64
+			var cnt int64
+			if err := rows.Scan(&chID, &cnt); err != nil {
+				return err
+			}
+
+			r := map[string]interface{}{
+				"channel_id": chID,
+				"unread":     cnt}
+			resp = append(resp, r)
 		}
-		if err != nil {
-			return err
-		}
-		r := map[string]interface{}{
-			"channel_id": chID,
-			"unread":     cnt}
-		resp = append(resp, r)
 	}
 
 	return c.JSON(http.StatusOK, resp)
