@@ -475,51 +475,29 @@ func fetchUnread(c echo.Context) error {
 
 	resp := []map[string]interface{}{}
 
-	// 未読のメッセージが存在するチャンネルIDと、未読メッセージ数
-	// 未読メッセージ数が0の場合、そのチャンネルはクエリーの結果に出現しないことに注意。
-	query, args, err := sqlx.In(`
-		SELECT hr.channel_id, COUNT(msg.id) as cnt
-		FROM message as msg
-		INNER JOIN (
-			SELECT channel_id, message_id FROM haveread WHERE user_id = ? AND channel_id IN (?)
-		) as hr
-		ON msg.channel_id = hr.channel_id AND hr.message_id < msg.id
-		GROUP BY hr.channel_id
-	`, userID, channels)
-	if err != nil {
-		return err
-	}
+	for _, chID := range channels {
+		lastID, err := queryHaveRead(userID, chID)
+		if err != nil {
+			return err
+		}
 
-	db.Rebind(query)
-	rows, err := db.Query(query, args...)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	found_channels := map[int64]bool{}
-
-	for rows.Next() {
-		var chID int64
 		var cnt int64
-		rows.Scan(&chID, &cnt)
-
+		if lastID > 0 {
+			err = db.Get(&cnt,
+				"SELECT COUNT(*) as cnt FROM message WHERE channel_id = ? AND ? < id",
+				chID, lastID)
+		} else {
+			err = db.Get(&cnt,
+				"SELECT COUNT(*) as cnt FROM message WHERE channel_id = ?",
+				chID)
+		}
+		if err != nil {
+			return err
+		}
 		r := map[string]interface{}{
 			"channel_id": chID,
 			"unread":     cnt}
 		resp = append(resp, r)
-
-		found_channels[chID] = true
-	}
-
-	// 出現しなかったチャンネルは、未読メッセージ数が0として扱う。
-	for _, chID := range channels {
-		if _, ok := found_channels[chID]; !ok {
-			r := map[string]interface{}{
-				"channel_id": chID,
-				"unread":     0}
-			resp = append(resp, r)
-		}
 	}
 
 	return c.JSON(http.StatusOK, resp)
