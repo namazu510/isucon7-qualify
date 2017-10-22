@@ -23,8 +23,7 @@ import (
 	"github.com/labstack/echo"
 	"github.com/labstack/echo-contrib/session"
 	"github.com/labstack/echo/middleware"
-    "encoding/json"
-    "github.com/garyburd/redigo/redis"
+	"github.com/garyburd/redigo/redis"
 )
 
 const (
@@ -361,11 +360,11 @@ func jsonifyMessage(m Message) (map[string]interface{}, error) {
 
 	u := User{}
 	
-	data, _ := redis.Bytes(c.Do("GET", "user_" + strconv.FormatInt(m.UserID, 10)))
-
+	data, _ := redis.Values(c.Do("HGETALL", "user_" + strconv.FormatInt(m.UserID, 10)))
+	
     // JSON to struct
-    if data != nil {
-		json.Unmarshal(data, u)
+    if len(data) != 0 {
+		redis.ScanStruct(data, &u)
 		fmt.Println(u)
     } else {
 		err := db.Get(&u, "SELECT name, display_name, avatar_icon FROM user WHERE id = ?",
@@ -373,8 +372,14 @@ func jsonifyMessage(m Message) (map[string]interface{}, error) {
 		if err != nil {
 			return nil, err
 		}
-		serialized, _ := json.Marshal(u)
-		c.Do("SET", "user_" + strconv.FormatInt(m.UserID, 10), serialized)
+		c.Do("HMSET", "user_" + strconv.FormatInt(m.UserID, 10), 
+			"ID", u.ID,
+			"Name", u.Name,
+			"Salt", u.Salt,
+			"Password", u.Password,
+			"DisplayName", u.DisplayName,
+			"AvatarIcon", u.AvatarIcon,
+			"CreatedAt", u.CreatedAt)
 	}
 
 	r := make(map[string]interface{})
@@ -405,8 +410,7 @@ func getMessage(c echo.Context) error {
 		return err
 	}
 
-	//messagesの取得クエリのlimit100なので100
-	response := make([]map[string]interface{}, 100)
+	response := make([]map[string]interface{}, 0)
 	for i := len(messages) - 1; i >= 0; i-- {
 		m := messages[i]
 		r, err := jsonifyMessage(m)
