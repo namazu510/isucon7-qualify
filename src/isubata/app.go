@@ -509,6 +509,7 @@ func fetchUnread(c echo.Context) error {
 		if err != nil {
 			return err
 		}
+		defer rows.Close()
 
 		for rows.Next() {
 			var chID int64
