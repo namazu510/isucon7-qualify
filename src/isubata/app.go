@@ -23,6 +23,8 @@ import (
 	"github.com/labstack/echo"
 	"github.com/labstack/echo-contrib/session"
 	"github.com/labstack/echo/middleware"
+    "encoding/json"
+    "github.com/garyburd/redigo/redis"
 )
 
 const (
@@ -351,11 +353,28 @@ func postMessage(c echo.Context) error {
 }
 
 func jsonifyMessage(m Message) (map[string]interface{}, error) {
+	c, e := redis.Dial("tcp", ":6379")
+    if e != nil {
+        log.Fatal(e)
+    }
+	defer c.Close()
+
 	u := User{}
-	err := db.Get(&u, "SELECT name, display_name, avatar_icon FROM user WHERE id = ?",
-		m.UserID)
-	if err != nil {
-		return nil, err
+	
+	data, _ := redis.Bytes(c.Do("GET", "user_" + strconv.FormatInt(m.UserID, 10)))
+
+    // JSON to struct
+    if data != nil {
+		json.Unmarshal(data, u)
+		fmt.Println(u)
+    } else {
+		err := db.Get(&u, "SELECT name, display_name, avatar_icon FROM user WHERE id = ?",
+			m.UserID)
+		if err != nil {
+			return nil, err
+		}
+		serialized, _ := json.Marshal(u)
+		c.Do("SET", "user_" + strconv.FormatInt(m.UserID, 10), serialized)
 	}
 
 	r := make(map[string]interface{})
@@ -386,7 +405,8 @@ func getMessage(c echo.Context) error {
 		return err
 	}
 
-	response := make([]map[string]interface{}, 0)
+	//messagesの取得クエリのlimit100なので100
+	response := make([]map[string]interface{}, 100)
 	for i := len(messages) - 1; i >= 0; i-- {
 		m := messages[i]
 		r, err := jsonifyMessage(m)
